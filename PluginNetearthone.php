@@ -16,9 +16,14 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
                                 'description'   =>lang('How CE sees this plugin (not to be confused with the Signup Name)'),
                                 'value'         =>lang('NetEarth One')
                                ),
+            lang('Use testing server') => array(
+                                'type'          =>'yesno',
+                                'description'   =>lang('Select Yes if you wish to use the NetEarth One testing environment, so that transactions are not actually made.<br><br><b>Note: </b>You will first need to register for a demo account at<br>http://cp.onlyfordemo.net/servlet/ResellerSignupServlet?&validatenow=false.'),
+                                'value'         =>0
+                               ),
             lang('Reseller ID') => array(
                                 'type'          =>'text',
-                                'description'   =>lang('Enter your NetEarth One Reseller ID.  This can be found in your NetEarth One account by going to Settings -> Personal Information -> Primary Profile.  The first field indicates your Reseller ID.'),
+                                'description'   =>lang('Enter your NetEarth One Reseller ID.  This can be found in your NetEarth One account by going to your profile link, in the top right corner.'),
                                 'value'         =>''
                                ),
             lang('Password') => array(
@@ -31,14 +36,9 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
                                 'description'   =>lang('Enter your API Key for your NetEarth One reseller account.  You should use this instead of your password, however you still may use your password instead.'),
                                 'value'         =>''
                                ),
-            lang('Use testing server') => array(
-                                'type'          =>'yesno',
-                                'description'   =>lang('Select Yes if you wish to use the NetEarth One testing environment, so that transactions are not actually made.<br><br><b>Note: </b>You will first need to register for a demo account at<br>http://cp.onlyfordemo.net/servlet/ResellerSignupServlet?&validatenow=false.'),
-                                'value'         =>0
-                               ),
             lang('Supported Features')  => array(
                                 'type'          => 'label',
-                                'description'   => '* '.lang('TLD Lookup').'<br>* '.lang('Domain Registration').' <br>* '.lang('Existing Domain Importing').' <br>* '.lang('Get / Set Nameserver Records').' <br>* '.lang('Get / Set Contact Information').' <br>* '.lang('Get / Set Registrar Lock').' <br>* '.lang('Initiate Domain Transfer').' <br>',
+                                'description'   => '* '.lang('TLD Lookup').'<br>* '.lang('Domain Registration').' <br>* '.lang('Existing Domain Importing').' <br>* '.lang('Get / Set Nameserver Records').' <br>* '.lang('Get / Set Contact Information').' <br>* '.lang('Get / Set Registrar Lock').' <br>* '.lang('Initiate Domain Transfer').' <br>* ' . lang('Automatically Renew Domain'),
                                 'value'         => ''
                                 ),
             lang('Actions') => array (
@@ -49,12 +49,12 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
             lang('Registered Actions') => array (
                                 'type'          => 'hidden',
                                 'description'   => lang('Current actions that are active for this plugin (when a domain is registered)'),
-                                'value'         => 'togglePrivacy (Toggle Privacy),DomainTransferWithPopup (Initiate Transfer),Cancel',
+                                'value'         => 'Renew (Renew Domain),DomainTransferWithPopup (Initiate Transfer),Cancel',
                                 ),
              lang('Registered Actions For Customer') => array (
                                 'type'          => 'hidden',
                                 'description'   => lang('Current actions that are active for this plugin (when a domain is registered)'),
-                                'value'         => 'togglePrivacy (Toggle Privacy)',
+                                'value'         => '',
             )
         );
 
@@ -180,34 +180,22 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
         return $userPackage->getCustomField('Domain Name') . ' has been registered.';
     }
 
+    /**
+     * Renew domain name
+     *
+     * @param array $params
+     */
+    function doRenew($params)
+    {
+        $userPackage = new UserPackage($params['userPackageId']);
+        $orderid = $this->renewDomain($this->buildRenewParams($userPackage,$params));
+        return $userPackage->getCustomField('Domain Name') . ' has been renewed.';
+    }
+
 
     function registerDomain($params)
     {
-        switch($params['tld']) {
-            case 'co.uk':
-            case 'org.uk':
-            case 'me.uk':
-                $contactType = 'UkContact';
-                break;
-            case 'eu':
-                $contactType = 'EuContact';
-                break;
-            case 'coop':
-                $contactType = 'CoopContact';
-                break;
-            case 'cn':
-                $contactType = 'CnContact';
-                break;
-            case 'co':
-                $contactType = 'CoContact';
-                break;
-            case 'ca':
-                $contactType = 'CaContact';
-                break;
-            default:
-                $contactType = 'Contact';
-                break;
-        }
+        $contactType = $this->getContactType($params);
 
         $newCustomer = false;
         $countrycode = $this->_getCountryCode($params['RegistrantCountry']);
@@ -262,7 +250,7 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
             'phone-cc'              => $countrycode,
             'phone'                 => $telno,
             'customer-id'           => $customerId,
-            'type'                  => $contactType, // Docs give no indication what the other options are used for?
+            'type'                  => $contactType,
         );
         // Handle any extra attributes needed
         if (isset($params['ExtendedAttributes']) && is_array($params['ExtendedAttributes'])) {
@@ -276,6 +264,12 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
                 $arguments['attr-name3'] = 'AgreementValue';
                 $arguments['attr-value3'] = $params['ExtendedAttributes']['cira_agreement_value'];
 
+            } else if ( $params['tld'] == 'us' ) {
+                $arguments['attr-name1'] = 'purpose';
+                $arguments['attr-value1'] = $params['ExtendedAttributes']['us_purpose'];
+
+                $arguments['attr-name2'] = 'category';
+                $arguments['attr-value2'] = $params['ExtendedAttributes']['us_nexus'];
 
             } else {
                 $i = 0;
@@ -322,17 +316,23 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
             }
         }
 
+        $purchasePrivacy = false;
+        if ( isset($params['package_addons']['IDPROTECT']) && $params['package_addons']['IDPROTECT'] == 1 ) {
+            $purchasePrivacy = true;
+        }
+
         $arguments = array(
             'domain-name'           => $domain,
             'years'                 => $params['NumYears'],
             'ns'                    => $nameservers,
             'customer-id'           => $customerId,
             'reg-contact-id'        => $contactId,
-            'admin-contact-id'      => ($contactType == 'Contact' || $contactType == 'CaContact' )? $contactId : -1,
-            'tech-contact-id'       => ($contactType == 'Contact' || $contactType == 'CaContact' )? $contactId : -1,
-            'billing-contact-id'    => ($contactType == 'Contact')? $contactId : -1,
+            'admin-contact-id'      => $this->getAdminContactId($params['tld'], $contactId),
+            'tech-contact-id'       => $this->getTechContactId($params['tld'], $contactId),
+            'billing-contact-id'    => $this->getBillingContactId($params['tld'], $contactId),
             'invoice-option'        => 'NoInvoice',
-            'protect-privacy'       => false, // needs support in the future
+            'purchase-privacy'      => $purchasePrivacy,
+            'protect-privacy'       => $purchasePrivacy
         );
 
         $result = $this->_makePostRequest('/domains/register', $arguments);
@@ -345,12 +345,51 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
             CE_Lib::log(4, 'NetEarth One domain registration of ' . $domain . ' successful.  EntityId: ' . $result->entityid);
             return array(1, array($result->entityid));
         }
-        if (isset($result->status) && $result->status == 'ERROR') {
-            CE_Lib::log(4, 'ERROR: NetEarth One domain registration failed with error: ' . $result->message);
-            throw new CE_Exception('Error registering NetEarth One domain: ' . $result->message);
+        if (isset($result->status) && strtolower($result->status) == 'error') {
+            if ( isset($result->message) ) {
+                $errorMessage = $result->message;
+            }
+            if ( isset($result->error) ) {
+                $errorMessage = $result->error;
+            }
+
+            CE_Lib::log(4, 'ERROR: NetEarth One domain registration failed with error: ' . $errorMessage);
+            throw new CE_Exception('Error registering NetEarth One domain: ' . $errorMessage);
         } else {
             CE_Lib::log(4, 'ERROR: NetEarth One domain registration failed with error: Unknown Reason.');
             throw new Exception('Error registering NetEarth One domain.');
+        }
+    }
+
+    function renewDomain($params)
+    {
+        $domain = $params['sld'].".".$params['tld'];
+
+        $generalInformation = $this->getGeneralInfo($params);
+
+        $arguments = array(
+            'order-id' => $generalInformation['id'],
+            'years' => $params['NumYears'],
+            'exp-date' => $generalInformation['endtime'],
+            'invoice-option' => 'NoInvoice'
+        );
+
+        $result = $this->_makePostRequest('/domains/renew', $arguments);
+
+        if ($result === false) {
+            // Already logged
+            throw new Exception('Error registering NetEarth One domain: A communication problem occurred.');
+        }
+        if (isset($result->status) && $result->status == 'Success') {
+            CE_Lib::log(4, 'NetEarth One domain renewal of ' . $domain . ' successful.  EntityId: ' . $result->entityid);
+            return array(1, array($result->entityid));
+        }
+        if (isset($result->status) && $result->status == 'ERROR') {
+            CE_Lib::log(4, 'ERROR: NetEarth One domain renewal failed with error: ' . $result->message);
+            throw new CE_Exception('Error renewing NetEarth One domain: ' . $result->message);
+        } else {
+            CE_Lib::log(4, 'ERROR: NetEarth One domain renewal failed with error: Unknown Reason.');
+            throw new Exception('Error renewing NetEarth One domain.');
         }
     }
 
@@ -377,6 +416,7 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
         }
         if (isset($result->orderid)) {
             $data = array();
+            $data['endtime'] = $result->endtime;
             $data['expiration'] = date('m/d/Y', $result->endtime);
             $data['domain'] = $result->domainname;
             $data['id'] = $result->orderid;
@@ -411,6 +451,8 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
 
     function initiateTransfer($params)
     {
+        $contactType = $this->getContactType($params);
+
         $newCustomer = false;
         $countrycode = $this->_getCountryCode($params['RegistrantCountry']);
         $telno = $this->_validatePhone($params['RegistrantPhone'],$countrycode);
@@ -464,7 +506,7 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
             'phone-cc'              => $countrycode,
             'phone'                 => $telno,
             'customer-id'           => $customerId,
-            'type'                  => 'Contact', // Docs give no indication what the other options are used for?
+            'type'                  => $contactType,
         );
 
        // Handle any extra attributes needed
@@ -487,13 +529,7 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
             }
         }
 
-
-
-
-
         $result = $this->_makePostRequest('/contacts/add', $arguments);
-
-
 
         if (is_numeric($result)) {
             CE_Lib::log(4, 'NetEarth One contact id created (or retrieved) with a value of ' . $result);
@@ -513,16 +549,15 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
             'domain-name'           => $domain,
             'customer-id'           => $customerId,
             'reg-contact-id'        => $contactId,
-            'admin-contact-id'      => $contactId,
-            'tech-contact-id'       => $contactId,
-            'billing-contact-id'    => $contactId,
+            'admin-contact-id'      => $this->getAdminContactId($params['tld'], $contactId),
+            'tech-contact-id'       => $this->getTechContactId($params['tld'], $contactId),
+            'billing-contact-id'    => $this->getBillingContactId($params['tld'], $contactId),
             'invoice-option'        => 'NoInvoice',
             'protect-privacy'       => false, // needs support in the future
             'auth-code'             => $params['eppCode']
         );
 
         $result = $this->_makePostRequest('/domains/transfer', $arguments);
-
 
         if ($result === false) {
             // Already logged
@@ -1249,5 +1284,83 @@ class PluginNetearthone extends RegistrarPlugin implements ICanImportDomains
     function disablePrivateRegistration($parmas)
     {
         throw new MethodNotImplemented('Method disablePrivateRegistration has not been implemented yet.');
+    }
+
+    private function getAdminContactId($tld, $contactId)
+    {
+        switch ( $tld ) {
+            case 'eu':
+            case 'nz':
+            case 'ru':
+            case 'uk':
+            case 'co.uk':
+            case 'org.uk':
+            case 'me.uk':
+                return -1;
+        }
+        return $contactId;
+    }
+
+    private function getTechContactId($tld, $contactId)
+    {
+        // Tech & Admin have the same restrictions.
+        return $this->getAdminContactId($tld, $contactId);
+    }
+
+    private function getBillingContactId($tld, $contactId)
+    {
+        switch ( $tld ) {
+            case 'berlin':
+            case 'ca':
+            case 'eu':
+            case 'nl':
+            case 'nz':
+            case 'ru':
+            case 'co.uk':
+            case 'org.uk':
+            case 'me.uk':
+            case 'uk':
+                return -1;
+        }
+        return $contactId;
+    }
+
+    private function getContactType($params)
+    {
+        switch($params['tld']) {
+            case 'ca':
+                $contactType = 'CaContact';
+                break;
+            case 'cn':
+                $contactType = 'CnContact';
+                break;
+            case 'co':
+                $contactType = 'CoContact';
+                break;
+            case 'de':
+                $contactType = 'DeContact';
+                break;
+            case 'es':
+                $contactType = 'EsContact';
+                break;
+            case 'eu':
+                $contactType = 'EuContact';
+                break;
+            case 'ru':
+                $contactType = 'RuContact';
+                break;
+            case 'co.uk':
+            case 'org.uk':
+            case 'me.uk':
+                $contactType = 'UkContact';
+                break;
+            case 'coop':
+                $contactType = 'CoopContact';
+                break;
+            default:
+                $contactType = 'Contact';
+                break;
+        }
+        return $contactType;
     }
 }
