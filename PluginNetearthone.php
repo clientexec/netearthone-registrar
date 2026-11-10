@@ -373,4 +373,23 @@ class PluginNetearthone extends RegistrarPlugin
         $row = $result->fetch();
         return $row['phone_code'];
     }
+
+    public function canAutoRenewDomain($params): bool
+    {
+        $status = $this->api->getCurrentStatus($params);
+        if ($status === '') {
+            CE_Lib::log(4, 'NetEarthOne: could not determine domain status, blocking autorenew');
+            return false;
+        }
+
+        // only Active and Expired renew through /domains/renew
+        // Pending Delete Restorable is redemption and needs a paid restore, so it stays manual
+        $normalized = mb_strtolower(str_replace(' ', '', $status));
+        if ($normalized === 'active' || $normalized === 'expired') {
+            return true;
+        }
+
+        CE_Lib::log(4, 'NetEarthOne: domain not in an autorenewable status: ' . $status);
+        return false;
+    }
 }
